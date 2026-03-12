@@ -6,6 +6,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -109,4 +110,8 @@ class AgentConfig:
     def is_url_allowed(self, url: str) -> bool:
         if not self.target.allowed_domains:
             return url.startswith(self.target.base_url)
-        return any(domain in url for domain in self.target.allowed_domains)
+        hostname = urlparse(url).hostname or ""
+        return any(
+            hostname == domain or hostname.endswith("." + domain)
+            for domain in self.target.allowed_domains
+        )
