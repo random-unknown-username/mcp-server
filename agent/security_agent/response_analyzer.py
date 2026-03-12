@@ -1,7 +1,7 @@
 """Differential response analysis.
 
 Compares original and modified HTTP responses to detect indicators of
-authorization flaws, data leakage, and unexpected behaviour changes.
+authorization flaws, data leakage, and unexpected behavior changes.
 """
 
 from __future__ import annotations

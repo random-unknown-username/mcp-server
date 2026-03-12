@@ -1,4 +1,4 @@
-"""Builds and maintains a graph model of application behaviour.
+"""Builds and maintains a graph model of application behavior.
 
 Tracks endpoints, parameters, tokens, user roles, workflow states,
 and object identifiers.  Constructs a request graph:
