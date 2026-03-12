@@ -22,10 +22,6 @@ services:
       - ./agent_state:/app/agent_state
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      h1-brain:
-        condition: service_started
-        required: false
 
   h1-brain:
     image: ghcr.io/patrikfehrenbach/h1-brain:latest
