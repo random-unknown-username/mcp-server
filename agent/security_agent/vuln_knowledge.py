@@ -59,6 +59,10 @@ SSRF_PAYLOADS = [
     "http://[::1]",
     "http://169.254.169.254/latest/meta-data/",
     "http://metadata.google.internal/computeMetadata/v1/",
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+    "http://metadata.google.internal/computeMetadata/v1/project/project-id",
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/",
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/scopes",
     "http://100.100.100.200/latest/meta-data/",
     "http://0x7f000001",
     "http://2130706433",
@@ -256,6 +260,100 @@ _register(WeaknessPattern(
     applicable_contexts=["response_header", "response_body"],
 ))
 
+# ---------------------------------------------------------------------------
+# GCP IAM weakness patterns
+# ---------------------------------------------------------------------------
+
+# Payloads for GCP metadata SSRF (used by gcp_iam_engine to build probes)
+GCP_METADATA_PATHS = [
+    "/computeMetadata/v1/instance/service-accounts/default/token",
+    "/computeMetadata/v1/instance/service-accounts/default/scopes",
+    "/computeMetadata/v1/instance/service-accounts/",
+    "/computeMetadata/v1/project/project-id",
+    "/computeMetadata/v1/project/numeric-project-id",
+    "/computeMetadata/v1/instance/zone",
+    "/computeMetadata/v1/instance/name",
+    "/computeMetadata/v1/instance/attributes/kube-env",
+    "/computeMetadata/v1/instance/attributes/",
+]
+
+# IAM permissions that enable privilege escalation when granted to a
+# lower-privileged identity (service account or user).
+GCP_PRIVESC_PERMISSIONS = [
+    "iam.serviceAccounts.actAs",
+    "iam.serviceAccounts.getAccessToken",
+    "iam.serviceAccounts.getOpenIdToken",
+    "iam.serviceAccounts.implicitDelegation",
+    "iam.serviceAccounts.signBlob",
+    "iam.serviceAccounts.signJwt",
+    "iam.serviceAccountKeys.create",
+    "iam.roles.update",
+    "resourcemanager.projects.setIamPolicy",
+    "resourcemanager.folders.setIamPolicy",
+    "resourcemanager.organizations.setIamPolicy",
+    "deploymentmanager.deployments.create",
+    "cloudbuild.builds.create",
+    "cloudfunctions.functions.create",
+    "cloudfunctions.functions.update",
+    "compute.instances.create",
+    "run.services.create",
+    "composer.environments.create",
+    "dataproc.clusters.create",
+    "dataflow.jobs.create",
+    "orgpolicy.policy.set",
+]
+
+# Common impersonation chain patterns used to escalate privileges
+GCP_IMPERSONATION_PATTERNS = [
+    # Direct impersonation: caller → target SA
+    "direct",
+    # Delegated impersonation: caller → intermediate SA → target SA
+    "delegated",
+    # Token chain: use one SA's token to generate another's
+    "token_chain",
+]
+
+
+_register(WeaknessPattern(
+    cwe_id="CWE-269",
+    name="GCP IAM Privilege Escalation",
+    category="cloud_iam",
+    description=(
+        "Improper privilege management in GCP IAM. A lower-privileged "
+        "service account or user can escalate to higher privileges via "
+        "dangerous permission combinations or impersonation chains."
+    ),
+    payloads=[],
+    detection_patterns=[
+        r'"access_token"',
+        r'"token_type"\s*:\s*"Bearer"',
+        r"iam\.serviceAccounts\.actAs",
+        r"iam\.serviceAccounts\.getAccessToken",
+        r"iam\.serviceAccountKeys\.create",
+    ],
+    severity_default="critical",
+    applicable_contexts=["gcp_iam"],
+))
+
+_register(WeaknessPattern(
+    cwe_id="CWE-284",
+    name="GCP Improper Access Control",
+    category="cloud_iam",
+    description=(
+        "Improper access control in GCP resources. Service account "
+        "impersonation allows accessing resources beyond intended scope."
+    ),
+    payloads=[],
+    detection_patterns=[
+        r'"access_token"',
+        r"roles/owner",
+        r"roles/editor",
+        r"iam\.serviceAccounts\.getAccessToken",
+    ],
+    severity_default="high",
+    applicable_contexts=["gcp_iam"],
+))
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -321,6 +419,12 @@ def suggest_attack_vectors(
         p.lower() in ("id", "user_id", "account_id", "uid", "pid", "order_id")
         for p in parameters
     )
+    has_gcp_params = any(
+        p.lower() in ("project", "project_id", "service_account",
+                       "sa_email", "target_principal", "zone", "instance",
+                       "bucket", "dataset", "key_ring")
+        for p in parameters
+    )
 
     # Always suggest injection testing on endpoints with params
     if parameters:
@@ -364,6 +468,18 @@ def suggest_attack_vectors(
             "cwe": "CWE-639",
             "reason": "ID parameter on authenticated endpoint — test for IDOR",
             "priority": "critical",
+        })
+
+    if has_gcp_params:
+        suggestions.append({
+            "cwe": "CWE-269",
+            "reason": "GCP-related parameter found — test for IAM privilege escalation",
+            "priority": "critical",
+        })
+        suggestions.append({
+            "cwe": "CWE-284",
+            "reason": "GCP resource parameter found — test for improper access control",
+            "priority": "high",
         })
 
     # CORS is always worth testing

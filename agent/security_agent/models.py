@@ -39,6 +39,8 @@ class VulnerabilityType(str, enum.Enum):
     PATH_TRAVERSAL = "path_traversal"
     HEADER_INJECTION = "header_injection"
     INFORMATION_DISCLOSURE = "information_disclosure"
+    GCP_IAM_BYPASS = "gcp_iam_bypass"
+    GCP_PRIVILEGE_ESCALATION = "gcp_privilege_escalation"
 
 
 class TaskStatus(str, enum.Enum):

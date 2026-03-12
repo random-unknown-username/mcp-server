@@ -62,17 +62,29 @@ class H1BrainConfig:
 
 
 @dataclass
+class GcpConfig:
+    """Settings for GCP IAM privilege escalation testing."""
+    enabled: bool = False
+    project_id: str = ""
+    target_service_account: str = ""
+    key_file: str = ""
+    impersonation_chain: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AgentConfig:
     target: TargetConfig = field(default_factory=TargetConfig)
     burp_mcp: BurpMcpConfig = field(default_factory=BurpMcpConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     h1_brain: H1BrainConfig = field(default_factory=H1BrainConfig)
+    gcp: GcpConfig = field(default_factory=GcpConfig)
     max_concurrent_tests: int = 5
     state_dir: str = _DEFAULT_STATE_DIR
     report_dir: str = _DEFAULT_REPORT_DIR
     user_sessions: list[dict[str, str]] = field(default_factory=list)
     enable_injection_tests: bool = True
     enable_recon: bool = True
+    enable_gcp_tests: bool = False
 
     @classmethod
     def from_file(cls, path: str | Path) -> AgentConfig:
@@ -89,17 +101,20 @@ class AgentConfig:
         burp_mcp = BurpMcpConfig(**data.get("burp_mcp", {}))
         browser = BrowserConfig(**data.get("browser", {}))
         h1_brain = H1BrainConfig(**data.get("h1_brain", {}))
+        gcp = GcpConfig(**data.get("gcp", {}))
         return cls(
             target=target,
             burp_mcp=burp_mcp,
             browser=browser,
             h1_brain=h1_brain,
+            gcp=gcp,
             max_concurrent_tests=data.get("max_concurrent_tests", 5),
             state_dir=data.get("state_dir", _DEFAULT_STATE_DIR),
             report_dir=data.get("report_dir", _DEFAULT_REPORT_DIR),
             user_sessions=data.get("user_sessions", []),
             enable_injection_tests=data.get("enable_injection_tests", True),
             enable_recon=data.get("enable_recon", True),
+            enable_gcp_tests=data.get("enable_gcp_tests", False),
         )
 
     def apply_env_overrides(self) -> None:
@@ -146,6 +161,18 @@ class AgentConfig:
         if val := os.environ.get("HEADLESS"):
             self.browser.headless = val.lower() in ("true", "1", "yes")
 
+        if val := os.environ.get("GCP_PROJECT"):
+            self.gcp.project_id = val
+            self.gcp.enabled = True
+            self.enable_gcp_tests = True
+        if val := os.environ.get("GCP_SERVICE_ACCOUNT"):
+            self.gcp.target_service_account = val
+        if val := os.environ.get("GCP_KEY_FILE"):
+            self.gcp.key_file = val
+        if val := os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            if not self.gcp.key_file:
+                self.gcp.key_file = val
+
     def to_dict(self) -> dict:
         return {
             "target": {
@@ -172,12 +199,20 @@ class AgentConfig:
                 "port": self.h1_brain.port,
                 "enabled": self.h1_brain.enabled,
             },
+            "gcp": {
+                "enabled": self.gcp.enabled,
+                "project_id": self.gcp.project_id,
+                "target_service_account": self.gcp.target_service_account,
+                "key_file": self.gcp.key_file,
+                "impersonation_chain": self.gcp.impersonation_chain,
+            },
             "max_concurrent_tests": self.max_concurrent_tests,
             "state_dir": self.state_dir,
             "report_dir": self.report_dir,
             "user_sessions": self.user_sessions,
             "enable_injection_tests": self.enable_injection_tests,
             "enable_recon": self.enable_recon,
+            "enable_gcp_tests": self.enable_gcp_tests,
         }
 
     def is_url_allowed(self, url: str) -> bool:

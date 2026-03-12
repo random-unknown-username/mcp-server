@@ -27,6 +27,7 @@ from .browser_controller import BrowserController
 from .burp_mcp_client import BurpMcpClient
 from .config import AgentConfig, generate_default_config
 from .finding_verifier import FindingVerifier
+from .gcp_iam_engine import GcpIamEngine
 from .h1_brain import H1BrainClient
 from .injection_test_engine import InjectionTestEngine
 from .logic_test_engine import LogicTestEngine
@@ -56,6 +57,7 @@ class SecurityAgent:
         self._verifier = FindingVerifier(self._burp)
         self._reporter = ReportGenerator(config.report_dir)
         self._h1_brain = H1BrainClient(config.h1_brain)
+        self._gcp_engine = GcpIamEngine(self._burp, config.gcp)
         self._findings: list[Finding] = []
         self._task_queue: list[TestTask] = []
         self._running = False
@@ -119,6 +121,10 @@ class SecurityAgent:
         # Phase 3: Injection tests
         if self._config.enable_injection_tests:
             await self._run_injection_tests()
+
+        # Phase 3b: GCP IAM tests
+        if self._config.enable_gcp_tests:
+            await self._run_gcp_tests()
 
         # Phase 4: Verify
         await self._verify_findings()
@@ -265,6 +271,23 @@ class SecurityAgent:
             elif isinstance(result, Exception):
                 logger.error("Injection test error: %s", result)
 
+    async def _run_gcp_tests(self) -> None:
+        """Run GCP IAM privilege escalation tests."""
+        primary = self._sessions[0] if self._sessions else UserSession(
+            user_id="default", role="user"
+        )
+        logger.info("Running GCP IAM tests (project: %s)", self._config.gcp.project_id)
+        try:
+            gcp_findings = await self._gcp_engine.run(
+                primary,
+                target_url=self._config.target.base_url,
+            )
+            self._findings.extend(gcp_findings)
+            if gcp_findings:
+                logger.info("GCP IAM tests found %d issues", len(gcp_findings))
+        except Exception as exc:
+            logger.error("GCP IAM test error: %s", exc)
+
     async def _verify_findings(self) -> None:
         unverified = [f for f in self._findings if not f.verified]
         secondary = self._sessions[1] if len(self._sessions) > 1 else None
@@ -408,6 +431,19 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
         help="Skip injection testing phase",
     )
     parser.add_argument(
+        "--gcp-project",
+        help="GCP project ID for IAM testing (enables GCP tests)",
+    )
+    parser.add_argument(
+        "--gcp-service-account",
+        help="Target GCP service account email for impersonation tests",
+    )
+    parser.add_argument(
+        "--no-gcp",
+        action="store_true",
+        help="Skip GCP IAM testing phase",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable debug logging",
@@ -487,6 +523,19 @@ def _resolve_config(args: argparse.Namespace) -> AgentConfig:
     if getattr(args, "no_injection", False):
         config.enable_injection_tests = False
 
+    gcp_project = getattr(args, "gcp_project", None)
+    if gcp_project:
+        config.gcp.project_id = gcp_project
+        config.gcp.enabled = True
+        config.enable_gcp_tests = True
+
+    gcp_sa = getattr(args, "gcp_service_account", None)
+    if gcp_sa:
+        config.gcp.target_service_account = gcp_sa
+
+    if getattr(args, "no_gcp", False):
+        config.enable_gcp_tests = False
+
     return config
 
 
@@ -548,6 +597,10 @@ def _cmd_run(args: argparse.Namespace) -> None:
     logger.info("Burp MCP: %s", config.burp_mcp.base_url)
     if config.h1_brain.enabled:
         logger.info("h1-brain: %s", config.h1_brain.base_url)
+    if config.enable_gcp_tests:
+        logger.info("GCP project: %s", config.gcp.project_id)
+        if config.gcp.target_service_account:
+            logger.info("GCP target SA: %s", config.gcp.target_service_account)
 
     agent = SecurityAgent(config)
     loop = asyncio.new_event_loop()
@@ -571,6 +624,10 @@ Quick start:
   security-agent init --target https://example.com
   TARGET_URL=https://example.com security-agent
 
+GCP IAM testing:
+  security-agent run --target https://example.com --gcp-project my-project
+  security-agent run --gcp-project my-project --gcp-service-account sa@proj.iam.gserviceaccount.com
+
 Environment variables:
   TARGET_URL          Target application URL
   BURP_MCP_URL        Burp MCP server URL (default: http://localhost:9876)
@@ -580,6 +637,9 @@ Environment variables:
   H1_BRAIN_URL        h1-brain MCP server URL (enables integration)
   PROGRAM_HANDLE      HackerOne program handle
   HEADLESS            Browser headless mode (true/false)
+  GCP_PROJECT         GCP project ID (enables GCP IAM tests)
+  GCP_SERVICE_ACCOUNT Target SA email for impersonation tests
+  GCP_KEY_FILE        Path to GCP service account key file
 """
 
 

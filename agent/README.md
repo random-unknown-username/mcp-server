@@ -1,6 +1,6 @@
 # Autonomous Web Application Security Research Agent
 
-An autonomous security research agent that integrates with the Burp Suite MCP Server to discover web application vulnerabilities. It operates like a real bug bounty researcher — performing recon, testing for injection flaws, access control issues, and business logic bugs, and optionally pulling intelligence from [h1-brain](https://github.com/PatrikFehrenbach/h1-brain) for HackerOne community insights.
+An autonomous security research agent that integrates with the Burp Suite MCP Server to discover web application vulnerabilities. It operates like a real bug bounty researcher — performing recon, testing for injection flaws, access control issues, business logic bugs, and GCP IAM privilege escalation, and optionally pulling intelligence from [h1-brain](https://github.com/PatrikFehrenbach/h1-brain) for HackerOne community insights.
 
 ## Quick Start
 
@@ -45,8 +45,8 @@ That's it. The agent will connect to Burp Suite MCP (default `localhost:9876`), 
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  Response    │  │  Finding     │  │  Report           │  │
-│  │  Analyzer    │  │  Verifier    │  │  Generator        │  │
+│  │  GCP IAM     │  │  Response    │  │  Finding          │  │
+│  │  Engine      │  │  Analyzer    │  │  Verifier         │  │
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
 │                                                             │
 │  ┌──────────────┐  ┌────────────────────────────────────┐  │
@@ -73,6 +73,7 @@ That's it. The agent will connect to Burp Suite MCP (default `localhost:9876`), 
 | **Access Control** | IDOR, privilege escalation, auth bypass, horizontal/vertical access, JWT tampering (alg:none) |
 | **Business Logic** | Workflow skip, negative values, replay attacks, race conditions, parameter pollution |
 | **CORS Testing** | Tests CORS policies with evil origins and checks credential reflection |
+| **GCP IAM** | Service account impersonation, delegated chains, privilege escalation via dangerous IAM permissions, GCP metadata SSRF |
 | **Vulnerability KB** | Built-in CWE-mapped knowledge base with payloads and detection patterns |
 | **h1-brain** | Optional integration with HackerOne disclosed reports and community weakness patterns |
 | **Smart Targeting** | Suggests attack vectors per-endpoint based on parameter names and context |
@@ -87,6 +88,7 @@ That's it. The agent will connect to Burp Suite MCP (default `localhost:9876`), 
 | `recon_engine.py` | Tech fingerprinting, header audit, interesting path discovery, CORS probing |
 | `vuln_knowledge.py` | CWE-mapped vulnerability knowledge base with payloads and detection patterns |
 | `injection_test_engine.py` | Tests for XSS, SQLi, SSRF, SSTI, path traversal, open redirect, CORS, header injection |
+| `gcp_iam_engine.py` | GCP IAM privilege escalation: SA impersonation, delegated chains, dangerous permissions, metadata SSRF |
 | `h1_brain.py` | Client for h1-brain MCP server — attack briefings, disclosed reports, weakness patterns |
 | `browser_controller.py` | Playwright-based browser automation with proxy support |
 | `burp_mcp_client.py` | Client for the Burp Suite MCP server (request replay, history) |
@@ -221,6 +223,69 @@ The agent will:
 - Pull publicly disclosed reports for the target program
 - Use weakness patterns to prioritize testing
 
+### GCP IAM Testing
+
+The agent can test for GCP IAM privilege escalation and service account impersonation vulnerabilities. This is useful for:
+- Cloud-native applications running on GCP
+- Targets that interact with GCP APIs
+- Finding SSRF-to-cloud-metadata escalation paths
+
+#### What it tests
+
+| Test | Description |
+|------|-------------|
+| **Metadata SSRF** | Probes for SSRF paths to `metadata.google.internal` to steal SA tokens, scopes, project IDs, and Kubernetes configs |
+| **SA Impersonation** | Attempts `generateAccessToken` and `generateIdToken` on target service accounts |
+| **Delegated Chains** | Tests multi-hop impersonation: SA → intermediate SA → high-privilege SA |
+| **Dangerous Permissions** | Audits IAM policy for permissions that enable privilege escalation (`actAs`, `getAccessToken`, `signBlob`, `setIamPolicy`, etc.) |
+| **Key Creation** | Checks whether the caller can create persistent SA keys (backdoor access) |
+| **Policy Enumeration** | Identifies overly permissive role bindings (owner/editor/admin on user accounts or allUsers) |
+
+#### Running GCP IAM tests
+
+```bash
+# Via CLI flags
+security-agent run \
+  --target https://your-target.com \
+  --gcp-project my-gcp-project \
+  --gcp-service-account target-sa@my-gcp-project.iam.gserviceaccount.com
+
+# Via environment variables
+GCP_PROJECT=my-gcp-project \
+GCP_SERVICE_ACCOUNT=target-sa@my-gcp-project.iam.gserviceaccount.com \
+security-agent run --target https://your-target.com
+
+# Via config file
+security-agent init --target https://your-target.com
+# Then edit agent_config.json to add:
+#   "gcp": {
+#     "enabled": true,
+#     "project_id": "my-gcp-project",
+#     "target_service_account": "target-sa@my-gcp-project.iam.gserviceaccount.com",
+#     "impersonation_chain": ["intermediate-sa@proj.iam.gserviceaccount.com", "target-sa@proj.iam.gserviceaccount.com"]
+#   },
+#   "enable_gcp_tests": true
+```
+
+#### Authentication
+
+The agent uses the caller's existing GCP credentials (from `GOOGLE_APPLICATION_CREDENTIALS` or Application Default Credentials) to test what permissions the current identity has. This models the attacker scenario of "what can I reach from this compromised SA?"
+
+#### Impersonation Chains
+
+A key feature is testing **delegated impersonation chains** — where SA-A can impersonate SA-B, which can impersonate SA-C (a high-privilege SA). Configure this via:
+
+```json
+{
+  "gcp": {
+    "impersonation_chain": [
+      "intermediate-sa@proj.iam.gserviceaccount.com",
+      "high-priv-sa@proj.iam.gserviceaccount.com"
+    ]
+  }
+}
+```
+
 ### Testing
 
 ```bash
@@ -240,6 +305,10 @@ make test              # or: python -m pytest tests/ -v
 | `H1_BRAIN_URL` | h1-brain URL (enables integration) | (disabled) |
 | `PROGRAM_HANDLE` | HackerOne program handle | |
 | `HEADLESS` | Browser headless mode | `true` |
+| `GCP_PROJECT` | GCP project ID (enables GCP IAM tests) | (disabled) |
+| `GCP_SERVICE_ACCOUNT` | Target SA email for impersonation tests | |
+| `GCP_KEY_FILE` | Path to GCP service account key file | |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Standard GCP credential path (fallback for key file) | |
 
 ## Agent Loop Phases
 
@@ -248,9 +317,10 @@ make test              # or: python -m pytest tests/ -v
 3. **Explore** — Browser crawl + Burp proxy history ingestion
 4. **Auth/Access Tests** — IDOR, privilege escalation, auth bypass, horizontal access
 5. **Injection Tests** — XSS, SQLi, SSRF, SSTI, path traversal, open redirect, CORS, header injection
-6. **Verify** — Multi-attempt reproducibility + cross-account validation
-7. **Report** — Generate JSON + Markdown reports
-8. **Repeat** — Loop every 30 seconds
+6. **GCP IAM Tests** — Service account impersonation, delegated chains, metadata SSRF, dangerous permissions (if configured)
+7. **Verify** — Multi-attempt reproducibility + cross-account validation
+8. **Report** — Generate JSON + Markdown reports
+9. **Repeat** — Loop every 30 seconds
 
 ## Safety
 
