@@ -131,6 +131,18 @@ def _check_error_messages(mod: HttpResponse, result: DiffResult) -> None:
         "exception",
         "sql syntax",
         "internal server error",
+        "mysql_fetch",
+        "pg_query",
+        "ora-",
+        "unclosed quotation mark",
+        "microsoft ole db",
+        "odbc",
+        "syntax error",
+        "debug mode",
+        "undefined variable",
+        "fatal error",
+        "parse error",
+        "warning:",
     ]
     for pattern in error_patterns:
         if pattern in body_lower:

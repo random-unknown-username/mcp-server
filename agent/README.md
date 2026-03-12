@@ -1,6 +1,6 @@
 # Autonomous Web Application Security Research Agent
 
-An autonomous security research agent that integrates with the Burp Suite MCP Server to discover web application vulnerabilities, focusing on authentication flaws, authorization bypass, and business logic issues.
+An autonomous security research agent that integrates with the Burp Suite MCP Server to discover web application vulnerabilities. It operates like a real bug bounty researcher — performing recon, testing for injection flaws, access control issues, and business logic bugs, and optionally pulling intelligence from [h1-brain](https://github.com/PatrikFehrenbach/h1-brain) for HackerOne community insights.
 
 ## Architecture
 
@@ -15,6 +15,11 @@ An autonomous security research agent that integrates with the Burp Suite MCP Se
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│  │  Recon       │  │  Injection   │  │  Vuln Knowledge  │  │
+│  │  Engine      │  │  Test Engine │  │  Base (CWE)      │  │
+│  └──────────────┘  └──────────────┘  └──────────────────┘  │
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
 │  │  Auth Test   │  │  Logic Test  │  │  Mutation         │  │
 │  │  Engine      │  │  Engine      │  │  Engine           │  │
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
@@ -24,41 +29,45 @@ An autonomous security research agent that integrates with the Burp Suite MCP Se
 │  │  Analyzer    │  │  Verifier    │  │  Generator        │  │
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
 │                                                             │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │              Main Agent Loop (24/7)                  │    │
-│  │   explore → test → verify → report → repeat         │    │
-│  └─────────────────────────────────────────────────────┘    │
+│  ┌──────────────┐  ┌────────────────────────────────────┐  │
+│  │  h1-brain    │  │    Main Agent Loop (24/7)           │  │
+│  │  Client      │  │ recon→explore→test→inject→verify→  │  │
+│  │  (optional)  │  │ report→repeat                      │  │
+│  └──────────────┘  └────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
-         │                      │
-         ▼                      ▼
-┌─────────────────┐   ┌─────────────────┐
-│  Chromium        │   │  Burp Suite     │
-│  (via Playwright)│──▶│  MCP Server     │
-│                  │   │  (Kotlin ext)   │
-└─────────────────┘   └─────────────────┘
+         │                      │                  │
+         ▼                      ▼                  ▼
+┌─────────────────┐   ┌─────────────────┐  ┌──────────────┐
+│  Chromium        │   │  Burp Suite     │  │  h1-brain    │
+│  (via Playwright)│──▶│  MCP Server     │  │  MCP Server  │
+│                  │   │  (Kotlin ext)   │  │  (optional)  │
+└─────────────────┘   └─────────────────┘  └──────────────┘
 ```
 
-## Data Flow
+## What Makes This a Real Researcher
 
-```
-Browser crawl ──► Burp Proxy ──► Request Graph ──► Test Engines
-                                                        │
-                    ┌───────────────────────────────────┘
-                    ▼
-              Mutation Engine ──► Burp MCP (replay) ──► Response Analyzer
-                                                              │
-                                                              ▼
-                                                       Finding Verifier
-                                                              │
-                                                              ▼
-                                                       Report Generator
-                                                        (JSON + Markdown)
-```
+| Capability | Description |
+|-----------|-------------|
+| **Recon** | Tech fingerprinting, security header audit, interesting path discovery (/.env, /.git, /actuator, swagger, graphql, etc.) |
+| **Injection Testing** | XSS, SQL injection, SSRF, SSTI, path traversal, open redirect, header injection — using real-world payloads |
+| **Access Control** | IDOR, privilege escalation, auth bypass, horizontal/vertical access, JWT tampering (alg:none) |
+| **Business Logic** | Workflow skip, negative values, replay attacks, race conditions, parameter pollution |
+| **CORS Testing** | Tests CORS policies with evil origins and checks credential reflection |
+| **Vulnerability KB** | Built-in CWE-mapped knowledge base with payloads and detection patterns |
+| **h1-brain** | Optional integration with HackerOne disclosed reports and community weakness patterns |
+| **Smart Targeting** | Suggests attack vectors per-endpoint based on parameter names and context |
+| **Verification** | Multi-attempt reproducibility + cross-account validation |
+| **Reporting** | JSON + Markdown reports with severity, reproduction steps, and PoC requests |
 
 ## Modules
 
 | Module | Description |
 |--------|-------------|
+| `main.py` | Orchestrates the continuous agent loop with all phases |
+| `recon_engine.py` | Tech fingerprinting, header audit, interesting path discovery, CORS probing |
+| `vuln_knowledge.py` | CWE-mapped vulnerability knowledge base with payloads and detection patterns |
+| `injection_test_engine.py` | Tests for XSS, SQLi, SSRF, SSTI, path traversal, open redirect, CORS, header injection |
+| `h1_brain.py` | Client for h1-brain MCP server — attack briefings, disclosed reports, weakness patterns |
 | `browser_controller.py` | Playwright-based browser automation with proxy support |
 | `burp_mcp_client.py` | Client for the Burp Suite MCP server (request replay, history) |
 | `request_graph_builder.py` | Builds endpoint/workflow graph from observed traffic |
@@ -68,35 +77,8 @@ Browser crawl ──► Burp Proxy ──► Request Graph ──► Test Engine
 | `logic_test_engine.py` | Tests for workflow bypass, race conditions, replay attacks |
 | `finding_verifier.py` | Reproduces and cross-validates potential findings |
 | `report_generator.py` | Generates JSON and Markdown vulnerability reports |
-| `main.py` | Orchestrates the continuous agent loop |
 | `models.py` | Data models (requests, responses, findings, endpoints) |
 | `config.py` | Configuration management |
-
-## Core Algorithms
-
-### IDOR Detection
-1. Parse numeric/UUID IDs from URL paths and request bodies
-2. Generate mutations: increment IDs, swap with known IDs, use cross-account IDs
-3. Replay mutated requests via Burp MCP
-4. Compare responses for data leakage indicators
-
-### Auth Bypass Detection
-1. Strip authentication headers/cookies from authenticated requests
-2. Tamper with JWT claims (role escalation, alg:none)
-3. Swap session tokens between user accounts
-4. Detect unexpected success responses (403→200 transitions)
-
-### Business Logic Testing
-1. Skip steps in multi-step workflows (access final step directly)
-2. Inject negative/zero values in numeric fields (price, quantity)
-3. Replay identical requests to detect missing idempotency controls
-4. Fire concurrent requests to detect race conditions
-
-### Differential Response Analysis
-1. Compare status codes (detect unexpected success)
-2. Measure body size changes (>30% flagged)
-3. Diff JSON fields (detect new sensitive fields)
-4. Scan for error message indicators (stack traces, SQL errors)
 
 ## Setup
 
@@ -105,6 +87,7 @@ Browser crawl ──► Burp Proxy ──► Request Graph ──► Test Engine
 - Python 3.11+
 - Burp Suite with the MCP Server extension installed and running
 - Playwright browsers installed
+- (Optional) [h1-brain](https://github.com/PatrikFehrenbach/h1-brain) running for HackerOne intelligence
 
 ### Installation
 
@@ -122,7 +105,8 @@ Create `agent_config.json`:
 {
   "target": {
     "base_url": "https://target-app.example.com",
-    "allowed_domains": ["target-app.example.com"]
+    "allowed_domains": ["target-app.example.com"],
+    "program_handle": "target-program"
   },
   "burp_mcp": {
     "host": "localhost",
@@ -133,6 +117,13 @@ Create `agent_config.json`:
     "proxy_host": "localhost",
     "proxy_port": 8080
   },
+  "h1_brain": {
+    "host": "localhost",
+    "port": 3001,
+    "enabled": false
+  },
+  "enable_injection_tests": true,
+  "enable_recon": true,
   "max_concurrent_tests": 5,
   "user_sessions": [
     {
@@ -151,6 +142,20 @@ Create `agent_config.json`:
 }
 ```
 
+### h1-brain Integration
+
+To leverage HackerOne community intelligence:
+
+1. Set up [h1-brain](https://github.com/PatrikFehrenbach/h1-brain) with your HackerOne API credentials
+2. Run the h1-brain server
+3. Set `h1_brain.enabled: true` and configure host/port in your agent config
+4. Set `target.program_handle` to the HackerOne program handle
+
+The agent will:
+- Fetch an attack briefing with scope, past findings, and suggested vectors
+- Pull publicly disclosed reports for the target program
+- Use weakness patterns to prioritize testing
+
 ### Running
 
 ```bash
@@ -167,6 +172,17 @@ python -m security_agent.main agent_config.json
 cd agent
 python -m pytest tests/ -v
 ```
+
+## Agent Loop Phases
+
+1. **Recon** — Fingerprint technologies, audit security headers, discover interesting paths, test CORS
+2. **h1-brain Briefing** — Fetch attack briefing and disclosed reports (if configured)
+3. **Explore** — Browser crawl + Burp proxy history ingestion
+4. **Auth/Access Tests** — IDOR, privilege escalation, auth bypass, horizontal access
+5. **Injection Tests** — XSS, SQLi, SSRF, SSTI, path traversal, open redirect, CORS, header injection
+6. **Verify** — Multi-attempt reproducibility + cross-account validation
+7. **Report** — Generate JSON + Markdown reports
+8. **Repeat** — Loop every 30 seconds
 
 ## Safety
 

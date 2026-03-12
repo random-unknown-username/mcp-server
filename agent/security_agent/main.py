@@ -1,11 +1,13 @@
 """Main entry point – autonomous security research agent.
 
 Runs a continuous loop that:
-1. Explores the target application via browser + Burp proxy history
-2. Builds a request graph of discovered endpoints
-3. Runs auth, IDOR, and business-logic tests
-4. Verifies and reports findings
-5. Persists state so it can resume after restarts
+1. Performs recon (tech fingerprinting, path discovery, header audit)
+2. Optionally fetches h1-brain attack briefings and disclosed reports
+3. Explores the target application via browser + Burp proxy history
+4. Builds a request graph of discovered endpoints
+5. Runs auth, IDOR, injection, and business-logic tests
+6. Verifies and reports findings
+7. Persists state so it can resume after restarts
 """
 
 from __future__ import annotations
@@ -24,10 +26,14 @@ from .browser_controller import BrowserController
 from .burp_mcp_client import BurpMcpClient
 from .config import AgentConfig
 from .finding_verifier import FindingVerifier
+from .h1_brain import H1BrainClient
+from .injection_test_engine import InjectionTestEngine
 from .logic_test_engine import LogicTestEngine
 from .models import Finding, TaskStatus, TestTask, UserSession
+from .recon_engine import ReconEngine
 from .report_generator import ReportGenerator
 from .request_graph_builder import RequestGraphBuilder
+from .vuln_knowledge import suggest_attack_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -44,20 +50,26 @@ class SecurityAgent:
         self._graph = RequestGraphBuilder()
         self._auth_engine = AuthTestEngine(self._burp)
         self._logic_engine = LogicTestEngine(self._burp)
+        self._injection_engine = InjectionTestEngine(self._burp)
+        self._recon_engine = ReconEngine(self._burp)
         self._verifier = FindingVerifier(self._burp)
         self._reporter = ReportGenerator(config.report_dir)
+        self._h1_brain = H1BrainClient(config.h1_brain)
         self._findings: list[Finding] = []
         self._task_queue: list[TestTask] = []
         self._running = False
         self._sessions: list[UserSession] = _load_sessions(config.user_sessions)
         self._state_path = Path(config.state_dir)
         self._state_path.mkdir(parents=True, exist_ok=True)
+        self._recon_done = False
+        self._h1_briefing: str = ""
 
     async def start(self) -> None:
         """Connect to Burp MCP, start the browser, and enter the main loop."""
         self._running = True
         await self._burp.connect()
         await self._browser.start()
+        await self._h1_brain.connect()
         self._load_state()
         logger.info("Agent started – target: %s", self._config.target.base_url)
 
@@ -78,6 +90,7 @@ class SecurityAgent:
         """Run one exploration+test cycle (useful for testing)."""
         await self._burp.connect()
         await self._browser.start()
+        await self._h1_brain.connect()
         try:
             await self._cycle()
         finally:
@@ -86,9 +99,30 @@ class SecurityAgent:
 
     async def _cycle(self) -> None:
         logger.info("=== Starting test cycle ===")
+
+        # Phase 0: Recon (once)
+        if not self._recon_done and self._config.enable_recon:
+            await self._run_recon()
+            self._recon_done = True
+
+        # Phase 0b: h1-brain briefing (once)
+        if not self._h1_briefing and self._h1_brain.is_connected:
+            await self._fetch_h1_briefing()
+
+        # Phase 1: Explore
         await self._explore()
+
+        # Phase 2: Tests
         await self._run_tests()
+
+        # Phase 3: Injection tests
+        if self._config.enable_injection_tests:
+            await self._run_injection_tests()
+
+        # Phase 4: Verify
         await self._verify_findings()
+
+        # Phase 5: Report
         self._reporter.generate(self._findings)
         logger.info(
             "Cycle complete: %d endpoints, %d findings (%d verified)",
@@ -96,6 +130,65 @@ class SecurityAgent:
             len(self._findings),
             sum(1 for f in self._findings if f.verified),
         )
+
+    async def _run_recon(self) -> None:
+        """Run reconnaissance against the target."""
+        base_url = self._config.target.base_url
+        if not base_url:
+            return
+        logger.info("Running recon against %s", base_url)
+        recon_result = await self._recon_engine.run(base_url)
+
+        # Log recon findings
+        if recon_result.technologies:
+            techs = ", ".join(
+                f"{t.name} {t.version}".strip()
+                for t in recon_result.technologies
+            )
+            logger.info("Technologies detected: %s", techs)
+
+        if recon_result.interesting_paths:
+            logger.info(
+                "Interesting paths found: %d",
+                len(recon_result.interesting_paths),
+            )
+
+        if recon_result.security_headers.missing_headers:
+            logger.info(
+                "Missing security headers: %s",
+                ", ".join(recon_result.security_headers.missing_headers),
+            )
+
+        if recon_result.cors_policy:
+            logger.info("CORS policy: %s", recon_result.cors_policy)
+
+        # Save recon to state
+        recon_path = self._state_path / "recon_result.json"
+        recon_path.write_text(json.dumps(recon_result.to_dict(), indent=2))
+
+    async def _fetch_h1_briefing(self) -> None:
+        """Fetch an attack briefing from h1-brain if available."""
+        handle = self._config.target.program_handle
+        if not handle:
+            return
+        logger.info("Fetching h1-brain attack briefing for '%s'", handle)
+        briefing = await self._h1_brain.get_attack_briefing(handle)
+        if briefing and briefing.raw_text:
+            self._h1_briefing = briefing.raw_text
+            briefing_path = self._state_path / "h1_briefing.md"
+            briefing_path.write_text(briefing.raw_text)
+            logger.info(
+                "h1-brain briefing saved (%d chars)", len(briefing.raw_text)
+            )
+
+        # Also pull disclosed reports for the program
+        disclosed = await self._h1_brain.search_disclosed_reports(
+            program=handle, limit=50
+        )
+        if disclosed:
+            logger.info(
+                "Found %d disclosed reports for %s", len(disclosed), handle
+            )
 
     async def _explore(self) -> None:
         base_url = self._config.target.base_url
@@ -143,6 +236,34 @@ class SecurityAgent:
             elif isinstance(result, Exception):
                 logger.error("Test error: %s", result)
 
+    async def _run_injection_tests(self) -> None:
+        """Run injection tests on endpoints with parameters."""
+        primary = self._sessions[0] if self._sessions else UserSession(
+            user_id="default", role="user"
+        )
+
+        param_endpoints = self._graph.get_endpoints_with_params()
+        semaphore = asyncio.Semaphore(self._config.max_concurrent_tests)
+
+        async def _test_injection(ep: Any) -> list[Finding]:
+            async with semaphore:
+                # Get suggested attack vectors for this endpoint
+                suggestions = suggest_attack_vectors(
+                    ep.url, ep.parameters, ep.requires_auth
+                )
+                cwe_ids = [s["cwe"] for s in suggestions]
+                return await self._injection_engine.test_endpoint(
+                    ep, primary, cwe_ids=cwe_ids
+                )
+
+        tasks = [_test_injection(ep) for ep in param_endpoints]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, list):
+                self._findings.extend(result)
+            elif isinstance(result, Exception):
+                logger.error("Injection test error: %s", result)
+
     async def _verify_findings(self) -> None:
         unverified = [f for f in self._findings if not f.verified]
         secondary = self._sessions[1] if len(self._sessions) > 1 else None
@@ -153,11 +274,13 @@ class SecurityAgent:
         self._save_state()
         await self._browser.stop()
         await self._burp.close()
+        await self._h1_brain.close()
 
     def _save_state(self) -> None:
         state = {
             "findings": [f.to_dict() for f in self._findings],
             "graph": self._graph.to_dict(),
+            "recon_done": self._recon_done,
             "timestamp": time.time(),
         }
         state_file = self._state_path / "agent_state.json"

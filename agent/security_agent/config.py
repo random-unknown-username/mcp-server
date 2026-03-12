@@ -19,6 +19,7 @@ class TargetConfig:
     base_url: str = ""
     allowed_domains: list[str] = field(default_factory=list)
     excluded_paths: list[str] = field(default_factory=list)
+    program_handle: str = ""
 
 
 @dataclass
@@ -48,14 +49,29 @@ class BrowserConfig:
 
 
 @dataclass
+class H1BrainConfig:
+    """Connection settings for h1-brain MCP server."""
+    host: str = "localhost"
+    port: int = 3001
+    enabled: bool = False
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+
+@dataclass
 class AgentConfig:
     target: TargetConfig = field(default_factory=TargetConfig)
     burp_mcp: BurpMcpConfig = field(default_factory=BurpMcpConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
+    h1_brain: H1BrainConfig = field(default_factory=H1BrainConfig)
     max_concurrent_tests: int = 5
     state_dir: str = _DEFAULT_STATE_DIR
     report_dir: str = _DEFAULT_REPORT_DIR
     user_sessions: list[dict[str, str]] = field(default_factory=list)
+    enable_injection_tests: bool = True
+    enable_recon: bool = True
 
     @classmethod
     def from_file(cls, path: str | Path) -> AgentConfig:
@@ -71,14 +87,18 @@ class AgentConfig:
         target = TargetConfig(**data.get("target", {}))
         burp_mcp = BurpMcpConfig(**data.get("burp_mcp", {}))
         browser = BrowserConfig(**data.get("browser", {}))
+        h1_brain = H1BrainConfig(**data.get("h1_brain", {}))
         return cls(
             target=target,
             burp_mcp=burp_mcp,
             browser=browser,
+            h1_brain=h1_brain,
             max_concurrent_tests=data.get("max_concurrent_tests", 5),
             state_dir=data.get("state_dir", _DEFAULT_STATE_DIR),
             report_dir=data.get("report_dir", _DEFAULT_REPORT_DIR),
             user_sessions=data.get("user_sessions", []),
+            enable_injection_tests=data.get("enable_injection_tests", True),
+            enable_recon=data.get("enable_recon", True),
         )
 
     def to_dict(self) -> dict:
@@ -87,6 +107,7 @@ class AgentConfig:
                 "base_url": self.target.base_url,
                 "allowed_domains": self.target.allowed_domains,
                 "excluded_paths": self.target.excluded_paths,
+                "program_handle": self.target.program_handle,
             },
             "burp_mcp": {
                 "host": self.burp_mcp.host,
@@ -101,10 +122,17 @@ class AgentConfig:
                 "viewport_height": self.browser.viewport_height,
                 "timeout_ms": self.browser.timeout_ms,
             },
+            "h1_brain": {
+                "host": self.h1_brain.host,
+                "port": self.h1_brain.port,
+                "enabled": self.h1_brain.enabled,
+            },
             "max_concurrent_tests": self.max_concurrent_tests,
             "state_dir": self.state_dir,
             "report_dir": self.report_dir,
             "user_sessions": self.user_sessions,
+            "enable_injection_tests": self.enable_injection_tests,
+            "enable_recon": self.enable_recon,
         }
 
     def is_url_allowed(self, url: str) -> bool:

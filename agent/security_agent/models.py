@@ -30,6 +30,15 @@ class VulnerabilityType(str, enum.Enum):
     STATE_VIOLATION = "state_violation"
     WORKFLOW_BYPASS = "workflow_bypass"
     PARAMETER_POLLUTION = "parameter_pollution"
+    XSS = "xss"
+    SQLI = "sqli"
+    SSRF = "ssrf"
+    SSTI = "ssti"
+    OPEN_REDIRECT = "open_redirect"
+    CORS_MISCONFIGURATION = "cors_misconfiguration"
+    PATH_TRAVERSAL = "path_traversal"
+    HEADER_INJECTION = "header_injection"
+    INFORMATION_DISCLOSURE = "information_disclosure"
 
 
 class TaskStatus(str, enum.Enum):
