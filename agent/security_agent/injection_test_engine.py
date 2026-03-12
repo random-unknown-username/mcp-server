@@ -181,10 +181,10 @@ class InjectionTestEngine:
                 hits.append(f"Open redirect to: {location}")
 
         # For reflected XSS check if payload appears in response
-        if weakness.cwe_id == "CWE-79" and mutated.body:
-            # Check if any XSS payload is reflected
+        if weakness.cwe_id == "CWE-79" and response.body:
+            # Check if any XSS payload is reflected in the response body
             for payload in weakness.payloads[:3]:
-                if payload in (response.body or ""):
+                if payload in response.body:
                     hits.append(f"XSS payload reflected in response: {payload[:50]}")
                     break
 

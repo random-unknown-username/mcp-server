@@ -176,7 +176,7 @@ _register(WeaknessPattern(
     description="User input is embedded into server-side templates unsafely",
     payloads=SSTI_PAYLOADS,
     detection_patterns=[
-        r"\b49\b",  # 7*7 = 49 in reflected output
+        r"\b49\b",  # 7*7 = 49; may match other occurrences — verify with context
         r"__class__",
         r"__subclasses__",
     ],

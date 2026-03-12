@@ -193,7 +193,7 @@ def _parse_disclosed_reports(text: str) -> list[DisclosedReport]:
             parts = line.split("**")
             if len(parts) >= 3:
                 report_id = parts[1].lstrip("#").strip()
-                remainder = parts[2] if len(parts) > 2 else ""
+                remainder = parts[2]
                 reports.append(DisclosedReport(
                     report_id=report_id,
                     title=remainder.strip(" —-"),
