@@ -12,6 +12,7 @@ Runs a continuous loop that:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
@@ -24,7 +25,7 @@ from typing import Any
 from .auth_test_engine import AuthTestEngine
 from .browser_controller import BrowserController
 from .burp_mcp_client import BurpMcpClient
-from .config import AgentConfig
+from .config import AgentConfig, generate_default_config
 from .finding_verifier import FindingVerifier
 from .h1_brain import H1BrainClient
 from .injection_test_engine import InjectionTestEngine
@@ -307,19 +308,246 @@ def _load_sessions(session_dicts: list[dict[str, str]]) -> list[UserSession]:
     return sessions
 
 
-def main() -> None:
-    """CLI entry point."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser."""
+    parser = argparse.ArgumentParser(
+        prog="security-agent",
+        description=(
+            "Autonomous web application security research agent.\n"
+            "Integrates with Burp Suite MCP to find vulnerabilities."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_CLI_EPILOG,
     )
 
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "agent_config.json"
-    config = AgentConfig.from_file(config_path)
+    subparsers = parser.add_subparsers(dest="command")
+
+    # --- run (default) ---
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Start the security agent (default command)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_run_args(run_parser)
+
+    # --- init ---
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Generate a starter agent_config.json",
+    )
+    init_parser.add_argument(
+        "--target", "-t",
+        help="Target base URL to pre-fill",
+        default="",
+    )
+    init_parser.add_argument(
+        "--output", "-o",
+        help="Output path (default: agent_config.json)",
+        default="agent_config.json",
+    )
+
+    # --- validate ---
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Validate an existing config file",
+    )
+    validate_parser.add_argument(
+        "validate_config",
+        nargs="?",
+        default="agent_config.json",
+        help="Path to config file (default: agent_config.json)",
+    )
+
+    return parser
+
+
+def _add_run_args(parser: argparse.ArgumentParser) -> None:
+    """Add common run arguments to a parser."""
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default=None,
+        help="Path to config JSON file (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--target", "-t",
+        help="Target base URL (overrides config)",
+    )
+    parser.add_argument(
+        "--burp-url",
+        help="Burp MCP server URL (default: http://localhost:9876)",
+    )
+    parser.add_argument(
+        "--burp-proxy-port",
+        type=int,
+        help="Burp proxy port for browser traffic (default: 8080)",
+    )
+    parser.add_argument(
+        "--headless/--no-headless",
+        dest="headless",
+        default=None,
+        action=argparse.BooleanOptionalAction,
+        help="Run browser in headless mode (default: true)",
+    )
+    parser.add_argument(
+        "--h1-brain-url",
+        help="h1-brain MCP server URL (enables h1-brain integration)",
+    )
+    parser.add_argument(
+        "--program-handle",
+        help="HackerOne program handle for h1-brain briefings",
+    )
+    parser.add_argument(
+        "--no-recon",
+        action="store_true",
+        help="Skip recon phase",
+    )
+    parser.add_argument(
+        "--no-injection",
+        action="store_true",
+        help="Skip injection testing phase",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable debug logging",
+    )
+
+
+def _find_config_file() -> Path | None:
+    """Auto-detect config file in common locations."""
+    candidates = [
+        Path("agent_config.json"),
+        Path("config.json"),
+        Path.home() / ".config" / "security-agent" / "config.json",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def _resolve_config(args: argparse.Namespace) -> AgentConfig:
+    """Build an AgentConfig from CLI args + env vars + config file."""
+    # 1. Load from file (if provided or auto-detected)
+    config_path = getattr(args, "config", None)
+    if config_path:
+        config = AgentConfig.from_file(config_path)
+    else:
+        found = _find_config_file()
+        if found:
+            logger.info("Using config: %s", found)
+            config = AgentConfig.from_file(found)
+        else:
+            config = AgentConfig()
+
+    # 2. Apply environment variable overrides
+    config.apply_env_overrides()
+
+    # 3. Apply CLI argument overrides (highest priority)
+    target = getattr(args, "target", None)
+    if target:
+        config.target.base_url = target
+        from urllib.parse import urlparse
+        parsed = urlparse(target)
+        if parsed.hostname and parsed.hostname not in config.target.allowed_domains:
+            config.target.allowed_domains.append(parsed.hostname)
+
+    burp_url = getattr(args, "burp_url", None)
+    if burp_url:
+        from urllib.parse import urlparse
+        parsed = urlparse(burp_url)
+        config.burp_mcp.host = parsed.hostname or "localhost"
+        config.burp_mcp.port = parsed.port or 9876
+        config.burp_mcp.use_ssl = parsed.scheme == "https"
+
+    burp_proxy_port = getattr(args, "burp_proxy_port", None)
+    if burp_proxy_port:
+        config.browser.proxy_port = burp_proxy_port
+
+    headless = getattr(args, "headless", None)
+    if headless is not None:
+        config.browser.headless = headless
+
+    h1_brain_url = getattr(args, "h1_brain_url", None)
+    if h1_brain_url:
+        from urllib.parse import urlparse
+        parsed = urlparse(h1_brain_url)
+        config.h1_brain.host = parsed.hostname or "localhost"
+        config.h1_brain.port = parsed.port or 3001
+        config.h1_brain.enabled = True
+
+    program_handle = getattr(args, "program_handle", None)
+    if program_handle:
+        config.target.program_handle = program_handle
+
+    if getattr(args, "no_recon", False):
+        config.enable_recon = False
+
+    if getattr(args, "no_injection", False):
+        config.enable_injection_tests = False
+
+    return config
+
+
+def _cmd_init(args: argparse.Namespace) -> None:
+    """Handle the 'init' subcommand."""
+    output = Path(args.output)
+    if output.exists():
+        print(f"⚠  {output} already exists. Overwrite? [y/N] ", end="")
+        if input().strip().lower() != "y":
+            print("Aborted.")
+            return
+
+    data = generate_default_config(
+        target_url=args.target,
+    )
+    output.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"✅ Config written to {output}")
+    print(f"   Edit it to set your target URL and session tokens.")
+    print(f"   Then run: security-agent run")
+
+
+def _cmd_validate(args: argparse.Namespace) -> None:
+    """Handle the 'validate' subcommand."""
+    path = Path(args.validate_config)
+    if not path.exists():
+        print(f"❌ Config file not found: {path}")
+        sys.exit(1)
+    try:
+        config = AgentConfig.from_file(path)
+    except Exception as exc:
+        print(f"❌ Invalid config: {exc}")
+        sys.exit(1)
+    print(f"✅ Config is valid: {path}")
+    if config.target.base_url:
+        print(f"   Target: {config.target.base_url}")
+    else:
+        print(f"   ⚠  No target URL configured")
+    print(f"   Burp MCP: {config.burp_mcp.base_url}")
+    if config.h1_brain.enabled:
+        print(f"   h1-brain: {config.h1_brain.base_url}")
+    print(f"   Sessions: {len(config.user_sessions)}")
+
+
+def _cmd_run(args: argparse.Namespace) -> None:
+    """Handle the 'run' subcommand (or bare invocation)."""
+    config = _resolve_config(args)
 
     if not config.target.base_url:
-        logger.error("No target base_url configured. Exiting.")
+        print(
+            "❌ No target URL configured.\n\n"
+            "Set a target using any of these methods:\n"
+            "  1. CLI flag:         security-agent run --target https://example.com\n"
+            "  2. Environment var:  TARGET_URL=https://example.com security-agent\n"
+            "  3. Config file:      security-agent init --target https://example.com\n"
+        )
         sys.exit(1)
+
+    logger.info("Target: %s", config.target.base_url)
+    logger.info("Burp MCP: %s", config.burp_mcp.base_url)
+    if config.h1_brain.enabled:
+        logger.info("h1-brain: %s", config.h1_brain.base_url)
 
     agent = SecurityAgent(config)
     loop = asyncio.new_event_loop()
@@ -335,6 +563,57 @@ def main() -> None:
         loop.run_until_complete(agent.start())
     finally:
         loop.close()
+
+
+_CLI_EPILOG = """\
+Quick start:
+  security-agent run --target https://example.com
+  security-agent init --target https://example.com
+  TARGET_URL=https://example.com security-agent
+
+Environment variables:
+  TARGET_URL          Target application URL
+  BURP_MCP_URL        Burp MCP server URL (default: http://localhost:9876)
+  BURP_MCP_HOST       Burp MCP host
+  BURP_MCP_PORT       Burp MCP port
+  BROWSER_PROXY_PORT  Burp proxy port for browser (default: 8080)
+  H1_BRAIN_URL        h1-brain MCP server URL (enables integration)
+  PROGRAM_HANDLE      HackerOne program handle
+  HEADLESS            Browser headless mode (true/false)
+"""
+
+
+def main() -> None:
+    """CLI entry point."""
+    # Backward compatibility: if the first arg looks like a file path
+    # (not a known subcommand), treat it as: security-agent run <path>
+    known_commands = {"run", "init", "validate"}
+    argv = sys.argv[1:]
+    if argv and argv[0] not in known_commands and not argv[0].startswith("-"):
+        argv = ["run"] + argv
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # Set up logging
+    level = logging.DEBUG if getattr(args, "verbose", False) else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    # Route to the right subcommand
+    command = args.command
+
+    if command == "init":
+        _cmd_init(args)
+    elif command == "validate":
+        _cmd_validate(args)
+    elif command == "run":
+        _cmd_run(args)
+    else:
+        # No subcommand — treat as 'run'
+        _cmd_run(args)
 
 
 if __name__ == "__main__":

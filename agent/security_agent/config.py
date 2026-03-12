@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -101,6 +102,50 @@ class AgentConfig:
             enable_recon=data.get("enable_recon", True),
         )
 
+    def apply_env_overrides(self) -> None:
+        """Override config values from environment variables.
+
+        Supported variables:
+          TARGET_URL          – target base URL
+          BURP_MCP_URL        – full Burp MCP URL (e.g. http://localhost:9876)
+          BURP_MCP_HOST       – Burp MCP host
+          BURP_MCP_PORT       – Burp MCP port
+          BROWSER_PROXY_PORT  – Burp proxy port for Playwright
+          H1_BRAIN_URL        – h1-brain URL (enables h1-brain integration)
+          PROGRAM_HANDLE      – HackerOne program handle
+          HEADLESS            – "true"/"false" for headless browser mode
+        """
+        if val := os.environ.get("TARGET_URL"):
+            self.target.base_url = val
+            parsed = urlparse(val)
+            if parsed.hostname and parsed.hostname not in self.target.allowed_domains:
+                self.target.allowed_domains.append(parsed.hostname)
+
+        if val := os.environ.get("BURP_MCP_URL"):
+            parsed = urlparse(val)
+            self.burp_mcp.host = parsed.hostname or "localhost"
+            self.burp_mcp.port = parsed.port or 9876
+            self.burp_mcp.use_ssl = parsed.scheme == "https"
+        if val := os.environ.get("BURP_MCP_HOST"):
+            self.burp_mcp.host = val
+        if val := os.environ.get("BURP_MCP_PORT"):
+            self.burp_mcp.port = int(val)
+
+        if val := os.environ.get("BROWSER_PROXY_PORT"):
+            self.browser.proxy_port = int(val)
+
+        if val := os.environ.get("H1_BRAIN_URL"):
+            parsed = urlparse(val)
+            self.h1_brain.host = parsed.hostname or "localhost"
+            self.h1_brain.port = parsed.port or 3001
+            self.h1_brain.enabled = True
+
+        if val := os.environ.get("PROGRAM_HANDLE"):
+            self.target.program_handle = val
+
+        if val := os.environ.get("HEADLESS"):
+            self.browser.headless = val.lower() in ("true", "1", "yes")
+
     def to_dict(self) -> dict:
         return {
             "target": {
@@ -143,3 +188,18 @@ class AgentConfig:
             hostname == domain or hostname.endswith("." + domain)
             for domain in self.target.allowed_domains
         )
+
+
+def generate_default_config(target_url: str = "", program_handle: str = "") -> dict:
+    """Generate a starter config dict suitable for writing to a JSON file."""
+    config = AgentConfig(
+        target=TargetConfig(
+            base_url=target_url,
+            program_handle=program_handle,
+        ),
+    )
+    if target_url:
+        parsed = urlparse(target_url)
+        if parsed.hostname:
+            config.target.allowed_domains = [parsed.hostname]
+    return config.to_dict()

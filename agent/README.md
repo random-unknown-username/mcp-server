@@ -2,6 +2,26 @@
 
 An autonomous security research agent that integrates with the Burp Suite MCP Server to discover web application vulnerabilities. It operates like a real bug bounty researcher — performing recon, testing for injection flaws, access control issues, and business logic bugs, and optionally pulling intelligence from [h1-brain](https://github.com/PatrikFehrenbach/h1-brain) for HackerOne community insights.
 
+## Quick Start
+
+```bash
+# 1. Install
+cd agent
+make setup             # or: pip install -e ".[dev]" && playwright install chromium
+
+# 2. Run (pick one)
+security-agent run --target https://your-target.com
+TARGET_URL=https://your-target.com security-agent
+security-agent run agent_config.json
+
+# 3. Generate a config file (optional, for full customization)
+security-agent init --target https://your-target.com
+# Edit agent_config.json to add session tokens, then:
+security-agent run
+```
+
+That's it. The agent will connect to Burp Suite MCP (default `localhost:9876`), launch a headless browser through Burp's proxy, and start finding vulnerabilities.
+
 ## Architecture
 
 ```
@@ -86,92 +106,140 @@ An autonomous security research agent that integrates with the Burp Suite MCP Se
 
 - Python 3.11+
 - Burp Suite with the MCP Server extension installed and running
-- Playwright browsers installed
 - (Optional) [h1-brain](https://github.com/PatrikFehrenbach/h1-brain) running for HackerOne intelligence
 
 ### Installation
 
 ```bash
 cd agent
+
+# Option A: One command
+make setup
+
+# Option B: Manual
 pip install -e ".[dev]"
 playwright install chromium
 ```
 
-### Configuration
+### Running
 
-Create `agent_config.json`:
+The agent supports three ways to configure it, in order of priority:
 
-```json
-{
-  "target": {
-    "base_url": "https://target-app.example.com",
-    "allowed_domains": ["target-app.example.com"],
-    "program_handle": "target-program"
-  },
-  "burp_mcp": {
-    "host": "localhost",
-    "port": 9876
-  },
-  "browser": {
-    "headless": true,
-    "proxy_host": "localhost",
-    "proxy_port": 8080
-  },
-  "h1_brain": {
-    "host": "localhost",
-    "port": 3001,
-    "enabled": false
-  },
-  "enable_injection_tests": true,
-  "enable_recon": true,
-  "max_concurrent_tests": 5,
-  "user_sessions": [
-    {
-      "user_id": "user_a",
-      "role": "user",
-      "headers": {"Authorization": "Bearer <token_a>"},
-      "cookies": {"session": "<session_a>"}
-    },
-    {
-      "user_id": "user_b",
-      "role": "user",
-      "headers": {"Authorization": "Bearer <token_b>"},
-      "cookies": {"session": "<session_b>"}
-    }
-  ]
-}
+#### 1. CLI flags (simplest)
+```bash
+# Minimal — just a target URL (uses all defaults)
+security-agent run --target https://your-target.com
+
+# With all options
+security-agent run \
+  --target https://your-target.com \
+  --burp-url http://localhost:9876 \
+  --burp-proxy-port 8080 \
+  --h1-brain-url http://localhost:3001 \
+  --program-handle your-program \
+  --no-headless \
+  -v
+```
+
+#### 2. Environment variables
+```bash
+TARGET_URL=https://your-target.com security-agent
+# or
+export TARGET_URL=https://your-target.com
+export BURP_MCP_URL=http://localhost:9876
+export H1_BRAIN_URL=http://localhost:3001
+export PROGRAM_HANDLE=your-program
+security-agent
+```
+
+#### 3. Config file (full control)
+```bash
+# Generate a starter config
+security-agent init --target https://your-target.com
+
+# Edit it to add session tokens, excluded paths, etc.
+vim agent_config.json
+
+# Run with it
+security-agent run agent_config.json
+# or just: security-agent run  (auto-detects agent_config.json)
+```
+
+All three can be combined. CLI flags override env vars, which override the config file.
+
+### Docker
+
+```bash
+# Build
+make docker-build   # or: docker build -t security-agent .
+
+# Run (Burp must be reachable from the container)
+docker run --rm -it \
+  -e TARGET_URL=https://your-target.com \
+  -e BURP_MCP_HOST=host.docker.internal \
+  -v ./reports:/app/reports \
+  security-agent
+
+# Or with docker-compose (includes optional h1-brain)
+TARGET_URL=https://your-target.com docker compose up agent
+```
+
+### Makefile targets
+
+```bash
+make help        # Show all targets
+make setup       # Install deps + Playwright
+make run TARGET=https://example.com
+make test        # Run tests
+make init TARGET=https://example.com
+make validate    # Validate config
+make clean       # Remove state/reports/caches
 ```
 
 ### h1-brain Integration
 
 To leverage HackerOne community intelligence:
 
-1. Set up [h1-brain](https://github.com/PatrikFehrenbach/h1-brain) with your HackerOne API credentials
-2. Run the h1-brain server
-3. Set `h1_brain.enabled: true` and configure host/port in your agent config
-4. Set `target.program_handle` to the HackerOne program handle
+```bash
+# Quick: pass the URL and program handle
+security-agent run \
+  --target https://your-target.com \
+  --h1-brain-url http://localhost:3001 \
+  --program-handle your-program
+
+# Or in config file, set:
+#   h1_brain.enabled: true
+#   target.program_handle: "your-program"
+
+# Or with docker-compose (starts h1-brain automatically):
+H1_API_TOKEN=your-token TARGET_URL=https://your-target.com \
+  docker compose --profile h1-brain up
+```
 
 The agent will:
 - Fetch an attack briefing with scope, past findings, and suggested vectors
 - Pull publicly disclosed reports for the target program
 - Use weakness patterns to prioritize testing
 
-### Running
-
-```bash
-# Continuous operation (24/7)
-security-agent agent_config.json
-
-# Or via Python
-python -m security_agent.main agent_config.json
-```
-
 ### Testing
 
 ```bash
 cd agent
-python -m pytest tests/ -v
+make test              # or: python -m pytest tests/ -v
 ```
+
+### Environment Variables Reference
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TARGET_URL` | Target application URL | (required) |
+| `BURP_MCP_URL` | Full Burp MCP URL | `http://localhost:9876` |
+| `BURP_MCP_HOST` | Burp MCP host | `localhost` |
+| `BURP_MCP_PORT` | Burp MCP port | `9876` |
+| `BROWSER_PROXY_PORT` | Burp proxy port for browser | `8080` |
+| `H1_BRAIN_URL` | h1-brain URL (enables integration) | (disabled) |
+| `PROGRAM_HANDLE` | HackerOne program handle | |
+| `HEADLESS` | Browser headless mode | `true` |
 
 ## Agent Loop Phases
 
