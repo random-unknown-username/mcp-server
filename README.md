@@ -10,7 +10,9 @@ For more information about the protocol visit: [modelcontextprotocol.io](https:/
 
 - Connect Burp Suite to AI clients through MCP
 - Automatic installation for Claude Desktop
+- One-click configuration for VS Code / GitHub Copilot, Cursor, Windsurf, opencode, and other MCP clients
 - Comes with packaged Stdio MCP proxy server
+- Includes a system prompt for guiding AI clients on Burp tool usage
 
 ## Usage
 
@@ -104,6 +106,121 @@ The extension has an installer which will automatically configure the client set
       ```
 
 3. **Restart Claude Desktop** - assuming Burp is running with the extension loaded.
+
+### VS Code / GitHub Copilot
+
+VS Code supports MCP servers natively for use with GitHub Copilot and other AI features. You can use either SSE (direct connection) or the Stdio proxy.
+
+#### Option 1: SSE (recommended)
+Add this to your VS Code `settings.json` (open with `Ctrl+Shift+P` → "Preferences: Open User Settings (JSON)"):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "burp": {
+        "url": "http://127.0.0.1:9876/sse"
+      }
+    }
+  }
+}
+```
+
+Or create a `.vscode/mcp.json` file in your project:
+```json
+{
+  "servers": {
+    "burp": {
+      "url": "http://127.0.0.1:9876/sse"
+    }
+  }
+}
+```
+
+#### Option 2: Stdio proxy
+```json
+{
+  "mcp": {
+    "servers": {
+      "burp": {
+        "type": "stdio",
+        "command": "<path to java>",
+        "args": ["-jar", "/path/to/mcp-proxy-all.jar", "--sse-url", "http://127.0.0.1:9876"]
+      }
+    }
+  }
+}
+```
+
+> **Tip:** Use the **"Copy SSE config to clipboard"** or **"Copy Stdio config to clipboard"** buttons in the extension's MCP tab to get a ready-to-paste configuration snippet with the correct paths.
+
+### Cursor
+
+Add this to your Cursor MCP configuration file (`~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "burp": {
+      "url": "http://127.0.0.1:9876/sse"
+    }
+  }
+}
+```
+
+Or using the Stdio proxy:
+```json
+{
+  "mcpServers": {
+    "burp": {
+      "command": "<path to java>",
+      "args": ["-jar", "/path/to/mcp-proxy-all.jar", "--sse-url", "http://127.0.0.1:9876"]
+    }
+  }
+}
+```
+
+### Windsurf
+
+Add this to your Windsurf MCP configuration file (`~/.windsurf/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "burp": {
+      "serverUrl": "http://127.0.0.1:9876/sse"
+    }
+  }
+}
+```
+
+### opencode
+
+Add this to your opencode configuration file (`~/.config/opencode/config.json`):
+
+```json
+{
+  "mcp": {
+    "burp": {
+      "type": "sse",
+      "url": "http://127.0.0.1:9876/sse"
+    }
+  }
+}
+```
+
+### Other MCP Clients
+
+Any MCP-compatible client can connect to Burp. Use one of these approaches:
+
+- **SSE (direct):** Point your client to `http://127.0.0.1:9876/sse`
+- **Stdio (proxy):** Run `java -jar /path/to/mcp-proxy-all.jar --sse-url http://127.0.0.1:9876`
+
+Use the **"Copy SSE config to clipboard"** or **"Copy Stdio config to clipboard"** buttons in the extension's Installation panel to get a configuration snippet for your client.
+
+### System Prompt
+
+A system prompt for AI clients is provided in [`SYSTEM_PROMPT.md`](SYSTEM_PROMPT.md). You can use this to guide your AI client on how to effectively use the Burp MCP tools. Copy or reference this prompt in your client's system prompt configuration to get better results when interacting with Burp Suite.
 
 ## Manual installations
 If you want to install the MCP server manually you can either use the extension's SSE server directly or the packaged

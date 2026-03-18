@@ -40,3 +40,15 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+### Python ###
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+.venv/
+venv/
+.pytest_cache/
+agent_state/
+reports/

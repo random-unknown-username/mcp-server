@@ -1,0 +1,32 @@
+# Docker Compose for running the security agent with optional h1-brain
+#
+# Quick start:
+#   TARGET_URL=https://example.com docker compose up agent
+#
+# With h1-brain:
+#   TARGET_URL=https://example.com PROGRAM_HANDLE=my-program docker compose up
+
+services:
+  agent:
+    build: .
+    environment:
+      - TARGET_URL=${TARGET_URL:?Set TARGET_URL to your target application URL}
+      - BURP_MCP_HOST=${BURP_MCP_HOST:-host.docker.internal}
+      - BURP_MCP_PORT=${BURP_MCP_PORT:-9876}
+      - BROWSER_PROXY_PORT=${BROWSER_PROXY_PORT:-8080}
+      - H1_BRAIN_URL=${H1_BRAIN_URL:-}
+      - PROGRAM_HANDLE=${PROGRAM_HANDLE:-}
+      - HEADLESS=${HEADLESS:-true}
+    volumes:
+      - ./reports:/app/reports
+      - ./agent_state:/app/agent_state
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  h1-brain:
+    image: ghcr.io/patrikfehrenbach/h1-brain:latest
+    profiles: ["h1-brain"]
+    ports:
+      - "3001:3001"
+    environment:
+      - H1_API_TOKEN=${H1_API_TOKEN:-}
